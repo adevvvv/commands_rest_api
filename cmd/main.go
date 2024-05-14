@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"database/sql"
 	"log"
 	"net/http"
@@ -60,7 +61,46 @@ func main() {
 	}
 }
 
-// Запускает переданную bash-команду, сохраняет результат выполнения в БД.
+// Функция для выполнения команды асинхронно и сохранения вывода в БД
+func executeAndSaveCommand(command string, done chan<- struct{}) {
+	// Выполнение команды
+	cmd := exec.Command("bash", "-c", command)
+
+	// Получение потока вывода команды
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		log.Printf("Error getting stdout pipe: %s\n", err)
+		return
+	}
+
+	// Запуск команды
+	if err := cmd.Start(); err != nil {
+		log.Printf("Error starting command: %s\n", err)
+		return
+	}
+
+	// Чтение и сохранение вывода команды в БД по мере выполнения
+	scanner := bufio.NewScanner(stdout)
+	for scanner.Scan() {
+		output := scanner.Text()
+		// Сохранение вывода в БД
+		if _, err := db.Exec("INSERT INTO commands(command, result) VALUES($1, $2)", command, output); err != nil {
+			log.Printf("Error saving command output to database: %s\n", err)
+			// Можно добавить логику обработки ошибки, если требуется
+		}
+	}
+
+	// Ожидание завершения выполнения команды
+	if err := cmd.Wait(); err != nil {
+		log.Printf("Command finished with error: %s\n", err)
+		// Можно добавить логику обработки ошибки, если требуется
+	}
+
+	// Отправляем сигнал об окончании выполнения команды через канал
+	done <- struct{}{}
+}
+
+// Функция для обработки запроса на выполнение команды
 func createCommand(c *gin.Context) {
 	var command Command
 	if err := c.ShouldBindJSON(&command); err != nil {
@@ -70,68 +110,16 @@ func createCommand(c *gin.Context) {
 
 	log.Printf("Received command: %s\n", command.Command)
 
-	// Выполнение команды и получение результата
-	cmd := exec.Command("bash", "-c", command.Command)
-	result, err := cmd.CombinedOutput()
-	if err != nil {
-		log.Printf("Error executing command: %s\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error(), "output": string(result)})
-		return
-	}
+	// Канал для сигнала о завершении выполнения команды
+	done := make(chan struct{})
 
-	log.Printf("Command executed successfully, result: %s\n", result)
+	// Запуск выполнения команды в отдельной горутине
+	go executeAndSaveCommand(command.Command, done)
 
-	// Сохранение результата выполнения команды в базу данных
-	stmt, err := db.Prepare("INSERT INTO commands(command, result) VALUES($1, $2)")
-	if err != nil {
-		log.Printf("Error preparing SQL statement: %s\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	defer stmt.Close()
+	// Ожидание завершения выполнения команды
+	<-done
 
-	_, err = stmt.Exec(command.Command, string(result))
-	if err != nil {
-		log.Printf("Error executing SQL statement: %s\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusCreated, gin.H{"message": "Command created successfully"})
-}
-
-// Функция для обработки запроса на получение всех команд
-func getAllCommands(c *gin.Context) {
-	// Выборка всех команд из базы данных
-	rows, err := db.Query("SELECT id, command, result FROM commands")
-	if err != nil {
-		log.Printf("Error querying commands from database: %s\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	defer rows.Close()
-
-	var commands []Command
-
-	// Чтение результатов запроса и добавление их в массив команд
-	for rows.Next() {
-		var command Command
-		if err := rows.Scan(&command.ID, &command.Command, &command.Result); err != nil {
-			log.Printf("Error scanning row: %s\n", err)
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		commands = append(commands, command)
-	}
-
-	// Проверка наличия ошибок при чтении результатов запроса
-	if err := rows.Err(); err != nil {
-		log.Printf("Error iterating over rows: %s\n", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, commands)
+	c.JSON(http.StatusCreated, gin.H{"message": "Command execution completed"})
 }
 
 // Функция для обработки запроса на получение одной команды по её ID
@@ -176,4 +164,38 @@ func stopCommandByID(c *gin.Context) {
 
 	// Возвращаем успешный ответ
 	c.JSON(http.StatusOK, gin.H{"message": "Command stopped successfully"})
+}
+
+// Функция для обработки запроса на получение всех команд
+func getAllCommands(c *gin.Context) {
+	// Выборка всех команд из базы данных
+	rows, err := db.Query("SELECT id, command, result FROM commands")
+	if err != nil {
+		log.Printf("Error querying commands from database: %s\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	var commands []Command
+
+	// Чтение результатов запроса и добавление их в массив команд
+	for rows.Next() {
+		var command Command
+		if err := rows.Scan(&command.ID, &command.Command, &command.Result); err != nil {
+			log.Printf("Error scanning row: %s\n", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		commands = append(commands, command)
+	}
+
+	// Проверка наличия ошибок при чтении результатов запроса
+	if err := rows.Err(); err != nil {
+		log.Printf("Error iterating over rows: %s\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, commands)
 }
