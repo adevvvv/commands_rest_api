@@ -51,6 +51,7 @@ func main() {
 
 	r.POST("/commands", createCommand)
 	r.GET("/commands", getAllCommands)
+	r.GET("/commands/:id", getCommandByID)
 
 	// Запуск сервера на порту 8080
 	if err := r.Run(":8000"); err != nil {
@@ -130,4 +131,22 @@ func getAllCommands(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, commands)
+}
+
+// Функция для обработки запроса на получение одной команды по её ID
+func getCommandByID(c *gin.Context) {
+	// Получение ID команды из параметра маршрута
+	id := c.Param("id")
+
+	var command Command
+
+	// Выборка команды из базы данных по её ID
+	err := db.QueryRow("SELECT id, command, result FROM commands WHERE id = $1", id).Scan(&command.ID, &command.Command, &command.Result)
+	if err != nil {
+		log.Printf("Error querying command from database: %s\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, command)
 }
