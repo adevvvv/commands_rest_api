@@ -52,6 +52,7 @@ func main() {
 	r.POST("/commands", createCommand)
 	r.GET("/commands", getAllCommands)
 	r.GET("/commands/:id", getCommandByID)
+	r.POST("/commands/:id/stop", stopCommandByID)
 
 	// Запуск сервера на порту 8080
 	if err := r.Run(":8000"); err != nil {
@@ -149,4 +150,30 @@ func getCommandByID(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, command)
+}
+
+// Функция для остановки выполнения команды по её ID
+func stopCommandByID(c *gin.Context) {
+	// Получение ID команды из параметра маршрута
+	id := c.Param("id")
+
+	// Проверка, существует ли команда с указанным ID
+	var command Command
+	err := db.QueryRow("SELECT command FROM commands WHERE id = $1", id).Scan(&command.Command)
+	if err != nil {
+		log.Printf("Error querying command from database: %s\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Выполнение команды остановки
+	stopCmd := exec.Command("bash", "-c", "kill -9 $(pgrep -f '"+command.Command+"')")
+	if err := stopCmd.Run(); err != nil {
+		log.Printf("Error stopping command: %s\n", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Возвращаем успешный ответ
+	c.JSON(http.StatusOK, gin.H{"message": "Command stopped successfully"})
 }
